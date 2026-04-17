@@ -89,56 +89,37 @@ class TwoPhaseProbeGenerator:
         subnet = self.user_subnet_map.get(username)
         return self._representative_ip(subnet) if subnet else "0.0.0.0"
 
-    def _extract_username(self, src_entry: str) -> Optional[str]:
-        return src_entry[:-1] if src_entry.endswith("@") else None
-
-    def _extract_subnet(self, dst_entry: str) -> Optional[str]:
-        return dst_entry.rsplit(":", 1)[0] if ":" in dst_entry else dst_entry
-
     def _get_user_subnets(self) -> list:
-        """Returns list of (username, subnet) pairs from ACL rules."""
-        user_subnets = []
-        for rule in self.policy.acls:
-            if rule.action != "accept":
-                continue
-            for src_entry in rule.src:
-                username = self._extract_username(src_entry)
-                if not username:
-                    continue
-                for dst_entry in rule.dst:
-                    subnet = self._extract_subnet(dst_entry)
-                    if subnet:
-                        user_subnets.append((username, subnet))
-        return user_subnets
+        """Returns list of (username, subnet) pairs from the DB-derived user_subnet_map.
+        
+        Deliberately reads from user_subnet_map (ground truth from DB), NOT from
+        the ACL. This ensures probe generation is independent of the policy under
+        test — a buggy ACL cannot influence which probes get generated.
+        Guarantees exactly N entries, one per user, giving true O(N) Phase 1.
+        """
+        return list(self.user_subnet_map.items())
 
     def generate_positive_probes(self) -> list:
-        """2N positive probes — one ICMP + one TCP:22 per user."""
+        """2N positive probes — one ICMP + one TCP:22 per user.
+        
+        Reads from DB-derived user_subnet_map (ground truth). The expected=True
+        reflects what SHOULD be allowed per the DB isolation model. The executor
+        then checks what the ACL actually permits — a mismatch = reachability failure.
+        """
         probes = []
-        for i, rule in enumerate(self.policy.acls):
-            if rule.action != "accept":
-                continue
-            for src_entry in rule.src:
-                username = self._extract_username(src_entry)
-                if not username:
-                    continue
-                src_ip = self._src_ip_for_user(username)
-                for dst_entry in rule.dst:
-                    subnet = self._extract_subnet(dst_entry)
-                    if not subnet:
-                        continue
-                    dst_ip = self._representative_ip(subnet)
-                    probes.append(Probe(
-                        src_user=username, src_ip=src_ip, dst_ip=dst_ip,
-                        dst_port=0, proto="icmp", expected=True, phase=0,
-                        rule_index=i,
-                        description=f"{username} -> own subnet {subnet} (should allow)"
-                    ))
-                    probes.append(Probe(
-                        src_user=username, src_ip=src_ip, dst_ip=dst_ip,
-                        dst_port=22, proto="tcp", expected=True, phase=0,
-                        rule_index=i,
-                        description=f"{username} -> own subnet {subnet}:22 (should allow)"
-                    ))
+        for username, subnet in self.user_subnet_map.items():
+            src_ip = self._src_ip_for_user(username)
+            dst_ip = self._representative_ip(subnet)
+            probes.append(Probe(
+                src_user=username, src_ip=src_ip, dst_ip=dst_ip,
+                dst_port=0, proto="icmp", expected=True, phase=0,
+                description=f"{username} -> own subnet {subnet} (should allow)"
+            ))
+            probes.append(Probe(
+                src_user=username, src_ip=src_ip, dst_ip=dst_ip,
+                dst_port=22, proto="tcp", expected=True, phase=0,
+                description=f"{username} -> own subnet {subnet}:22 (should allow)"
+            ))
         return probes
 
     def generate_phase1_probes(self) -> list:
@@ -170,21 +151,17 @@ class TwoPhaseProbeGenerator:
         """
         Phase 2 — k(N-1) targeted probes.
         Only generated for users who failed Phase 1.
-        Tests ALL other subnets to localise exactly which boundary is violated.
+        Tests ALL other subnets (from DB) to localise exactly which boundary is violated.
         """
         probes = []
-        user_subnets = self._get_user_subnets()
-        all_users = {u for u, _ in user_subnets}
+        user_subnets = self._get_user_subnets()  # DB-derived, exactly N entries
 
         for leaking_user in users_with_leaks:
             src_ip = self._src_ip_for_user(leaking_user)
-            leaking_user_subnet = self.user_subnet_map.get(leaking_user)
 
             for other_user, other_subnet in user_subnets:
                 if other_user == leaking_user:
                     continue
-                # Skip the probe we already ran in Phase 1 for this user
-                # (we already know they can reach at least one subnet)
                 dst_ip = self._representative_ip(other_subnet)
                 probes.append(Probe(
                     src_user=leaking_user, src_ip=src_ip, dst_ip=dst_ip,
