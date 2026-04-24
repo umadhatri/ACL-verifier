@@ -6,6 +6,7 @@ Reads user and subnet allocation data and generates a correct Headscale huJSON p
 import json
 from dataclasses import dataclass, field
 from typing import Optional
+from synthetic_data.generator import generate_synthetic_db, SyntheticDatabase
 
 
 @dataclass
@@ -48,7 +49,7 @@ class ACLGenerator:
     ROUTER_TAG = "tag:router"
     MANAGEMENT_SUBNET = "10.20.0.0/16"
 
-    def __init__(self, db):
+    def __init__(self, db: SyntheticDatabase):
         self.db = db
 
     def generate(self) -> HeadscalePolicy:
@@ -89,7 +90,6 @@ class ACLGenerator:
 
 
 if __name__ == "__main__":
-    from synthetic_data.generator import generate_synthetic_db
     db = generate_synthetic_db(num_students=5, num_instructors=1)
     generator = ACLGenerator(db)
     policy = generator.generate()
