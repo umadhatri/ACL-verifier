@@ -4,7 +4,8 @@ Reads user and subnet allocation data and generates a correct Headscale huJSON p
 """
 from models.policy import ACLRule, HeadscalePolicy
 from models.db_interface import DatabaseInterface
-from synthetic_data.generator import generate_synthetic_db
+from models.db_models import UserRole
+
 
 class ACLGenerator:
     ROUTER_TAG = "tag:router"
@@ -16,8 +17,10 @@ class ACLGenerator:
     def generate(self) -> HeadscalePolicy:
         acls = []
         active_users = self.db.get_active_users()
-        admins = [u for u in active_users if u.role == "admin"]
-        regular_users = [u for u in active_users if u.role != "admin"]
+        # NOTE: u.role is a UserRole enum — must compare against UserRole.ADMIN,
+        # not the string "admin". Comparing against a string silently never matches.
+        admins = [u for u in active_users if u.role == UserRole.ADMIN]
+        regular_users = [u for u in active_users if u.role != UserRole.ADMIN]
 
         if admins:
             acls.append(ACLRule(

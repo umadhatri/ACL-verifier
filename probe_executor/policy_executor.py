@@ -10,12 +10,14 @@ simulation. For each probe (src_user, dst_ip, port, proto), it:
 
 This faithfully models Headscale's forwarding semantics since Headscale's
 enforcement is fully described by the ACL policy file.
+
+This executor is the oracle — use it to validate real executor results.
 """
 
 import ipaddress
 from dataclasses import dataclass
 from enum import Enum
-from acl_generator.generator import HeadscalePolicy, ACLRule
+from models.policy import HeadscalePolicy, ACLRule
 from probe_generator.generator import Probe
 
 
@@ -110,7 +112,6 @@ class PolicyAwareExecutor:
                 continue
             if self._src_matches(rule, probe.src_user) and \
                self._dst_matches(rule, probe.dst_ip, probe.dst_port):
-                # Rule matched — probe is allowed
                 observed = True
                 result = ProbeResult.PASS if observed == probe.expected else ProbeResult.FAIL
                 return ProbeOutcome(probe=probe, observed=observed,
@@ -169,8 +170,9 @@ class ViolationReporter:
 
 if __name__ == "__main__":
     from synthetic_data.generator import generate_synthetic_db
-    from acl_generator.generator import ACLGenerator, ACLRule
+    from acl_generator.generator import ACLGenerator
     from probe_generator.generator import ProbeGenerator
+    import copy
 
     db = generate_synthetic_db(num_students=5, num_instructors=1)
     policy = ACLGenerator(db).generate()
@@ -193,7 +195,6 @@ if __name__ == "__main__":
     # --- TEST 2: Missing rule (student3's rule removed) ---
     print("\nTEST 2: Missing rule — student3's ACL entry removed")
     print("=" * 65)
-    import copy
     faulty_policy = copy.deepcopy(policy)
     faulty_policy.acls = [r for r in faulty_policy.acls
                            if not (len(r.src) == 1 and r.src[0] == "student3@")]

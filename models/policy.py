@@ -1,12 +1,17 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
+
 
 @dataclass
 class ACLRule:
     action: str
     src: list
     dst: list
+    # Note: proto is present for model completeness but is NOT used in ACL generation
+    # or verification. Port/protocol-level isolation is handled by AWS security groups.
+    # Headscale ACLs in this project are purely identity-based (who can reach whom),
+    # not port-filtered. Do not add port logic here without updating the executor too.
     proto: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -14,14 +19,14 @@ class ACLRule:
         if self.proto:
             rule["proto"] = self.proto
         return rule
-    
-    
+
+
 @dataclass
 class HeadscalePolicy:
     tag_owners: dict
     acls: list[ACLRule]
     auto_approvers: dict
-    hosts: dict = None
+    hosts: Optional[dict] = None
 
     def to_dict(self) -> dict:
         policy = {
