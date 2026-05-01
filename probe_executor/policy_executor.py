@@ -122,7 +122,7 @@ class PolicyAwareExecutor:
         result = ProbeResult.PASS if observed == probe.expected else ProbeResult.FAIL
         return ProbeOutcome(probe=probe, observed=observed, result=result, matched_rule=-1)
 
-    def run(self, probes: list) -> list:
+    def run(self, probes: list[Probe]) -> list[ProbeOutcome]:
         """Evaluate all probes and return outcomes."""
         return [self.evaluate_probe(probe) for probe in probes]
 
@@ -145,7 +145,7 @@ class ViolationReporter:
         print()
 
         if not failed:
-            print("✓ All probes passed. ACL correctly enforces isolation policy.")
+            print("✓ All probes passed.")
             return
 
         print(f"VIOLATIONS DETECTED ({len(failed)} total)")
@@ -163,10 +163,6 @@ class ViolationReporter:
             for o in false_denies:
                 print(f"   {o}")
 
-        print()
-        print("=" * 65)
-        print("Recommendation: Review ACL rules for the affected users.")
-
 
 if __name__ == "__main__":
     from synthetic_data.generator import generate_synthetic_db
@@ -176,12 +172,7 @@ if __name__ == "__main__":
 
     db = generate_synthetic_db(num_students=5, num_instructors=1)
     policy = ACLGenerator(db).generate()
-
-    user_subnet_map = {}
-    for user in db.get_active_users():
-        subnet = db.get_subnet_for_user(user.id)
-        if subnet:
-            user_subnet_map[user.headscale_username] = subnet.subnet_cidr
+    user_subnet_map = db.get_user_subnet_map()
 
     probes = ProbeGenerator(policy, user_subnet_map).generate()
     reporter = ViolationReporter()
