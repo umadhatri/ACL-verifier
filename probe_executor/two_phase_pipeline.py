@@ -106,7 +106,7 @@ class TwoPhasePipeline:
 
 if __name__ == "__main__":
     from synthetic_data.generator import generate_synthetic_db
-    from acl_generator.generator import ACLGenerator, ACLRule
+    from acl_generator.generator import ACLGenerator
 
     db = generate_synthetic_db(num_students=5, num_instructors=1)
     policy = ACLGenerator(db).generate()

@@ -17,12 +17,16 @@ Probe counts:
   Best case:       2N + N = 3N      (no violations, Phase 2 never runs)
   Worst case:      2N + N + N(N-1)  (all users violated)
   Typical case:    2N + N + k(N-1)  (k violations, k << N)
+
+IMPORTANT — probes are generated from user_subnet_map (DB ground truth), NOT
+from the ACL. These two inputs must remain independent: a buggy ACL cannot
+influence which probes are generated or what they expect to see.
 """
 
 import ipaddress
 from dataclasses import dataclass, field
 from typing import Optional
-from acl_generator.generator import HeadscalePolicy
+from models.policy import HeadscalePolicy
 
 
 @dataclass
@@ -91,7 +95,7 @@ class TwoPhaseProbeGenerator:
 
     def _get_user_subnets(self) -> list:
         """Returns list of (username, subnet) pairs from the DB-derived user_subnet_map.
-        
+
         Deliberately reads from user_subnet_map (ground truth from DB), NOT from
         the ACL. This ensures probe generation is independent of the policy under
         test — a buggy ACL cannot influence which probes get generated.
@@ -101,7 +105,7 @@ class TwoPhaseProbeGenerator:
 
     def generate_positive_probes(self) -> list:
         """2N positive probes — one ICMP + one TCP:22 per user.
-        
+
         Reads from DB-derived user_subnet_map (ground truth). The expected=True
         reflects what SHOULD be allowed per the DB isolation model. The executor
         then checks what the ACL actually permits — a mismatch = reachability failure.
@@ -123,8 +127,8 @@ class TwoPhaseProbeGenerator:
         return probes
 
     def generate_phase1_probes(self) -> list:
-        """
-        N Phase 1 probes — one per user to ANY other tenant's subnet.
+        """N Phase 1 probes — one per user to ANY other tenant's subnet.
+
         Cheap O(N) sweep to detect which users have isolation leaks.
         We pick the next user's subnet as the probe target (arbitrary but consistent).
         """
@@ -132,7 +136,6 @@ class TwoPhaseProbeGenerator:
         user_subnets = self._get_user_subnets()
 
         for i, (username, own_subnet) in enumerate(user_subnets):
-            # Pick any other subnet — use next one in list (wrapping)
             other_idx = (i + 1) % len(user_subnets)
             other_user, other_subnet = user_subnets[other_idx]
 
@@ -148,9 +151,9 @@ class TwoPhaseProbeGenerator:
         return probes
 
     def generate_phase2_probes(self, users_with_leaks: list) -> list:
-        """
-        Phase 2 — k(N-1) targeted probes.
-        Only generated for users who failed Phase 1.
+        """Phase 2 — k(N-1) targeted probes.
+
+        Only generated for users who failed Phase 1 (or were flagged by static checker).
         Tests ALL other subnets (from DB) to localise exactly which boundary is violated.
         """
         probes = []
@@ -171,9 +174,9 @@ class TwoPhaseProbeGenerator:
 
         return probes
 
-    def generate(self, users_with_leaks: list = None) -> TwoPhaseProbeSet:
-        """
-        Generate the full two-phase probe set.
+    def generate(self, users_with_leaks: Optional[list] = None) -> TwoPhaseProbeSet:
+        """Generate the full two-phase probe set.
+
         If users_with_leaks is None, pre-generates Phase 2 for all users
         (useful for mock evaluation). In real execution, Phase 2 is only
         generated after Phase 1 results are known.
