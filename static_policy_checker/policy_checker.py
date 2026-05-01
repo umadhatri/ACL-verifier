@@ -9,7 +9,7 @@ WITHOUT running any probes. Catches violations that are structurally visible:
   OVERLY_BROAD_RULE  — user's ACL rule covers more than their /24 (e.g. a /16)
   DUPLICATE_RULES    — user has more than one ACL rule
   PRIVILEGE_ESCALATION — non-admin user has a rule covering the management subnet
-  ORPHAN_RULE        — ACL rule references a user not in the DB
+  ORPHAN_RULE        — ACL rule references a user not in the DB or non active-user in DB
 
 Static checker feeds directly into Phase 2 — flagged users skip Phase 1 and go
 straight to full boundary localisation. This is the only way to catch WRONG_SUBNET
@@ -57,21 +57,19 @@ class StaticCheckResult:
         Returns list of usernames that should be escalated to Phase 2.
         ORPHAN_RULE violations flag the rule's username token, not a real DB user,
         so they are excluded from probe escalation.
+        MISSING RULE, DUPLICATE RULES violations do not effect the isolation failures. 
+        So they are excluded from probe escalation to phase2 which focusses on localisation of isolation failures.
         """
         escalate_types = {
-            ViolationType.MISSING_RULE,
             ViolationType.WRONG_SUBNET,
             ViolationType.OVERLY_BROAD_RULE,
-            ViolationType.DUPLICATE_RULES,
             ViolationType.PRIVILEGE_ESCALATION,
         }
-        seen = set()
-        users = []
+        users = set()
         for v in self.violations:
-            if v.violation_type in escalate_types and v.username not in seen:
-                seen.add(v.username)
-                users.append(v.username)
-        return users
+            if v.violation_type in escalate_types:
+                users.add(v.username)
+        return list(users)
 
     @property
     def passed(self) -> bool:
@@ -158,11 +156,7 @@ class StaticPolicyChecker:
 
         # Build lookup maps from DB
         db_user_map: dict[str, User] = {u.headscale_username: u for u in active_users}
-        db_subnet_map: dict[str, str] = {}  # headscale_username → subnet_cidr
-        for user in active_users:
-            subnet = self.db.get_subnet_for_user(user.id)
-            if subnet:
-                db_subnet_map[user.headscale_username] = subnet.subnet_cidr
+        db_subnet_map = self.db.get_user_subnet_map()
 
         # Build a map of username → list of ACL rules that reference them
         acl_rules_by_user: dict[str, list[ACLRule]] = {}
@@ -192,7 +186,7 @@ class StaticPolicyChecker:
                 result.violations.append(StaticViolation(
                     violation_type=ViolationType.ORPHAN_RULE,
                     username=username,
-                    detail=f"ACL has rule for '{username}' but this user is not in the DB"
+                    detail=f"ACL has rule for '{username}' but this user is not in the DB or is not active"
                 ))
 
         # --- Checks 3-6: Per-user rule analysis ---
@@ -226,7 +220,7 @@ class StaticPolicyChecker:
                         rule_net = ipaddress.IPv4Network(cidr, strict=False)
                         mgmt_net = ipaddress.IPv4Network(self.MANAGEMENT_SUBNET, strict=False)
                         # Escalate if: rule is broader than /24 AND overlaps management space
-                        if rule_net.prefixlen < 24 and rule_net.overlaps(mgmt_net):
+                        if rule_net.prefixlen < 24 and rule_net.supernet_of(mgmt_net):
                             result.violations.append(StaticViolation(
                                 violation_type=ViolationType.PRIVILEGE_ESCALATION,
                                 username=username,
@@ -289,11 +283,11 @@ if __name__ == "__main__":
     result3.report()
 
     print()
-    print("TEST 4: Overly broad rule — student2 gets entire /16")
+    print("TEST 4: Overly broad rule — student2 gets covers more than /24")
     faulty4 = copy.deepcopy(policy)
     for rule in faulty4.acls:
         if len(rule.src) == 1 and rule.src[0] == "student2@":
-            rule.dst = ["10.20.0.0/16:*"]
+            rule.dst = ["10.20.3.0/23:*"]
     result4 = checker.check(faulty4)
     result4.report()
 

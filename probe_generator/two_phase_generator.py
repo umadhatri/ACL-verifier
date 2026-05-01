@@ -19,14 +19,12 @@ Probe counts:
   Typical case:    2N + N + k(N-1)  (k violations, k << N)
 
 IMPORTANT — probes are generated from user_subnet_map (DB ground truth), NOT
-from the ACL. These two inputs must remain independent: a buggy ACL cannot
-influence which probes are generated or what they expect to see.
+from the ACL. A buggy ACL cannot influence which probes are generated or what they expect to see.
 """
 
 import ipaddress
 from dataclasses import dataclass, field
 from typing import Optional
-from models.policy import HeadscalePolicy
 
 
 @dataclass
@@ -81,8 +79,7 @@ class TwoPhaseProbeSet:
 class TwoPhaseProbeGenerator:
     HOST_OFFSET = 10
 
-    def __init__(self, policy: HeadscalePolicy, user_subnet_map: dict):
-        self.policy = policy
+    def __init__(self, user_subnet_map: dict):
         self.user_subnet_map = user_subnet_map
 
     def _representative_ip(self, subnet_cidr: str) -> str:
@@ -197,15 +194,9 @@ if __name__ == "__main__":
     from acl_generator.generator import ACLGenerator
 
     db = generate_synthetic_db(num_students=5, num_instructors=1)
-    policy = ACLGenerator(db).generate()
+    user_subnet_map = db.get_user_subnet_map()
 
-    user_subnet_map = {}
-    for user in db.get_active_users():
-        subnet = db.get_subnet_for_user(user.id)
-        if subnet:
-            user_subnet_map[user.headscale_username] = subnet.subnet_cidr
-
-    gen = TwoPhaseProbeGenerator(policy, user_subnet_map)
+    gen = TwoPhaseProbeGenerator(user_subnet_map)
 
     print("=== No violations (Phase 2 never triggered) ===")
     probe_set = gen.generate(users_with_leaks=[])

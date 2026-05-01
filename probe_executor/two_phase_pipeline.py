@@ -12,16 +12,19 @@ Orchestrates the full two-phase adaptive probing workflow:
 import copy
 from probe_generator.two_phase_generator import TwoPhaseProbeGenerator, Probe
 from probe_executor.policy_executor import PolicyAwareExecutor, ProbeResult, ViolationReporter
-
+from models.db_interface import DatabaseInterface
+from static_policy_checker.policy_checker import StaticPolicyChecker
 
 class TwoPhasePipeline:
 
-    def __init__(self, policy, user_subnet_map: dict):
+    def __init__(self, policy, db: DatabaseInterface):
+        self.db = db
         self.policy = policy
-        self.user_subnet_map = user_subnet_map
-        self.generator = TwoPhaseProbeGenerator(policy, user_subnet_map)
+        self.user_subnet_map = db.get_user_subnet_map()
+        self.generator = TwoPhaseProbeGenerator(self.user_subnet_map)
         self.executor = PolicyAwareExecutor(policy)
         self.reporter = ViolationReporter()
+        self.static_checker = StaticPolicyChecker(db)
 
     def run(self, verbose: bool = True) -> dict:
         """
@@ -29,7 +32,7 @@ class TwoPhasePipeline:
         Returns a summary dict with probe counts and violations found.
         """
         results = {
-            "positive_outcomes": [],
+            "positive_probe_outcomes": [],
             "phase1_outcomes": [],
             "phase2_outcomes": [],
             "users_with_leaks": [],
@@ -38,15 +41,16 @@ class TwoPhasePipeline:
 
         # --- Positive probes ---
         positive_probes = self.generator.generate_positive_probes()
-        positive_outcomes = self.executor.run(positive_probes)
-        results["positive_outcomes"] = positive_outcomes
+        positive_probe_outcomes = self.executor.run(positive_probes)
+        results["positive_probe_outcomes"] = positive_probe_outcomes
         results["total_probes_run"] += len(positive_probes)
+        positive_probe_failure_users = set(o.probe.src_user for o in positive_probe_outcomes if o.result == ProbeResult.FAIL)
 
         if verbose:
             print("=" * 65)
             print("POSITIVE PROBE RESULTS (reachability verification)")
             print("=" * 65)
-            self.reporter.report(positive_outcomes)
+            self.reporter.report(positive_probe_outcomes)
 
         # --- Phase 1 sweep ---
         phase1_probes = self.generator.generate_phase1_probes()
@@ -55,10 +59,15 @@ class TwoPhasePipeline:
         results["total_probes_run"] += len(phase1_probes)
 
         # Identify users who failed Phase 1 (isolation leak detected)
-        users_with_leaks = [
-            o.probe.src_user for o in phase1_outcomes
-            if o.result == ProbeResult.FAIL
-        ]
+        phase1_flagged_users = set(o.probe.src_user for o in phase1_outcomes if o.result == ProbeResult.FAIL)
+
+        # Identify users who are flagged by Static Policy Checker
+        static_check_result = self.static_checker.check(self.policy)
+        static_checking_flagged_users = set(static_check_result.flagged_users)
+
+        # Flagged users combined from both phase 1 and static policy checking are passed to phase2
+        users_with_leaks = list(phase1_flagged_users | static_checking_flagged_users)
+        
         results["users_with_leaks"] = users_with_leaks
 
         if verbose:
@@ -67,6 +76,12 @@ class TwoPhasePipeline:
             print("PHASE 1 SWEEP RESULTS (O(N) isolation check)")
             print("=" * 65)
             self.reporter.report(phase1_outcomes)
+
+            print()
+            print()
+            static_check_result.report()
+            print()
+            
             if users_with_leaks:
                 print(f"\n→ Leak detected for: {users_with_leaks}")
                 print(f"→ Triggering Phase 2 localisation for {len(users_with_leaks)} user(s)...")
@@ -74,11 +89,13 @@ class TwoPhasePipeline:
                 print("\n→ No leaks detected. Phase 2 not needed.")
 
         # --- Phase 2 localisation (only if needed) ---
+        phase2_flagged_users = set()
         if users_with_leaks:
             phase2_probes = self.generator.generate_phase2_probes(users_with_leaks)
             phase2_outcomes = self.executor.run(phase2_probes)
             results["phase2_outcomes"] = phase2_outcomes
             results["total_probes_run"] += len(phase2_probes)
+            phase2_flagged_users = set(o.probe.src_user for o in phase2_outcomes if o.result == ProbeResult.FAIL)
 
             if verbose:
                 print()
@@ -97,9 +114,26 @@ class TwoPhasePipeline:
             print(f"  Positive probes:     {len(positive_probes)}")
             print(f"  Phase 1 probes:      {len(phase1_probes)}")
             print(f"  Phase 2 probes:      {len(results['phase2_outcomes'])}")
-            print(f"Users with leaks:      {len(users_with_leaks)}")
-            if not users_with_leaks:
-                print("\n✓ ACL correctly enforces isolation. No violations found.")
+            print()
+            print(f"Reachability failure users: {len(positive_probe_failure_users)}")
+            print(f"Isolation failure users: {len(phase2_flagged_users)}")
+
+            if not positive_probe_failure_users and not phase2_flagged_users:
+                if static_checking_flagged_users:
+                    print()
+                    print("Static violations found but no probe failures detected.")
+                    print("Likely cause: flagged rule(s) cover unallocated address space or inactive tenants in DB")
+                    print("If all flagged destinations are active tenants, investigate static checker logic or probe generation")
+                else:
+                    print("\n✓ ACL correctly enforces isolation and reachability. No violations found.")
+            else:
+                print("\n✗ ACL Violations detected.")
+                print(f"Recommendation: Review ACL rules for the affected users: {str(positive_probe_failure_users | phase2_flagged_users)}")
+            
+            print("Note: Violations not affecting isolation/ reachability are reported in Static Checking Report above(Orphan rules, Duplicate rules)")
+            # print(f"Users with leaks:      {len(users_with_leaks)}")
+            # if not users_with_leaks:
+                # print("\n✓ ACL correctly enforces isolation. No violations found.")
 
         return results
 
@@ -111,16 +145,10 @@ if __name__ == "__main__":
     db = generate_synthetic_db(num_students=5, num_instructors=1)
     policy = ACLGenerator(db).generate()
 
-    user_subnet_map = {}
-    for user in db.get_active_users():
-        subnet = db.get_subnet_for_user(user.id)
-        if subnet:
-            user_subnet_map[user.headscale_username] = subnet.subnet_cidr
-
     print("=" * 65)
     print("TEST 1: Clean policy — Phase 2 should never trigger")
     print("=" * 65)
-    pipeline = TwoPhasePipeline(policy, user_subnet_map)
+    pipeline = TwoPhasePipeline(policy, db)
     pipeline.run()
 
     print()
@@ -132,7 +160,7 @@ if __name__ == "__main__":
     for rule in faulty_policy.acls:
         if len(rule.src) == 1 and rule.src[0] == "student2@":
             rule.dst = ["10.20.0.0/16:*"]
-    pipeline2 = TwoPhasePipeline(faulty_policy, user_subnet_map)
+    pipeline2 = TwoPhasePipeline(faulty_policy, db)
     pipeline2.run()
 
     print()
@@ -144,5 +172,5 @@ if __name__ == "__main__":
     for rule in faulty_policy3.acls:
         if len(rule.src) == 1 and rule.src[0] == "student1@":
             rule.dst = ["10.20.3.0/24:*"]
-    pipeline3 = TwoPhasePipeline(faulty_policy3, user_subnet_map)
+    pipeline3 = TwoPhasePipeline(faulty_policy3, db)
     pipeline3.run()

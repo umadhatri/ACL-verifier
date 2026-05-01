@@ -27,3 +27,15 @@ class DatabaseInterface(ABC):
         Return all lab deployments for a user that are currently running.
         """
         pass
+
+    def get_user_subnet_map(self) -> dict:
+        """
+        Return a mapping from Headscale usernames to their assigned subnet CIDRs
+        for all active users with valid subnet allocations.
+        """
+        user_subnet_map = {}
+        for user in self.get_active_users():
+            subnet = self.get_subnet_for_user(user.id)
+            if subnet:
+                user_subnet_map[user.headscale_username] = subnet.subnet_cidr
+        return user_subnet_map
