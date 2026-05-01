@@ -4,6 +4,7 @@ Reads user and subnet allocation data and generates a correct Headscale huJSON p
 """
 from models.policy import ACLRule, HeadscalePolicy
 from models.db_interface import DatabaseInterface
+from models.db_models import UserRole
 from synthetic_data.generator import generate_synthetic_db
 
 class ACLGenerator:
